@@ -1,0 +1,94 @@
+name: Tourism MLOps Pipeline
+
+on:
+  push:
+    branches:
+      - main            # automatically triggers on every push to main
+  workflow_dispatch:     # allows a manual run from the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+
+  register-dataset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+      - name: Upload Dataset to Hugging Face Hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python model_building/data_register.py
+
+  data-prep:
+    needs: register-dataset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+      - name: Run Data Preparation
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python model_building/data_prep.py
+
+  model-training:
+    needs: data-prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+      - name: Start MLflow Server
+        run: |
+          nohup mlflow server --host 127.0.0.1 --port 5000 --backend-store-uri sqlite:///mlflow.db > mlflow_server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:5000/health && break; sleep 2; done
+      - name: Model Building (tuning, tracking and registration)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MLFLOW_TRACKING_URI: http://127.0.0.1:5000
+        run: python model_building/train.py
+      - name: Upload MLflow tracking data
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-tracking
+          path: |
+            mlflow.db
+            model_building/artifacts/metrics.json
+            model_building/artifacts/experiment_results.csv
+
+  deploy-hosting:
+    # The app is hosted on Streamlit Community Cloud, which redeploys automatically from `main`.
+    # This job is the deployment gate: it verifies the app files and the registered model.
+    needs: [register-dataset, data-prep, model-training]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+      - name: Verify deployment (app files + registered model)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python deployment/verify_deployment.py

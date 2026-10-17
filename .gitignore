@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+mlruns/
+mlartifacts/
+mlflow.db
+data/processed/
+model_building/artifacts/
